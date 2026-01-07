@@ -41,7 +41,7 @@ def _compile_binary(name: str) -> Path:
     print(f"Compiling {name}.swift...", file=sys.stderr)
     try:
         subprocess.run(
-            ["swiftc", str(source_path), "-o", str(binary_path)],
+            ["swiftc", "-parse-as-library", str(source_path), "-o", str(binary_path)],
             capture_output=True,
             text=True,
             check=True,
