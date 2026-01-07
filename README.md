@@ -58,11 +58,14 @@ from apple_foundation import transcribe
 text = transcribe("audio.mp3", "output.txt", locale="en-US")
 ```
 
-## Requirements
+## System Requirements
 
-- macOS 26+ (Tahoe)
-- Python 3.10+
-- Swift toolchain (for building binaries)
+- **macOS 26 (Tahoe)** or newer (Required for on-device Foundation Models)
+- **Xcode 26 Command Line Tools**: Required for auto-compiling Swift binaries.
+  ```bash
+  xcode-select --install
+  ```
+- **Python 3.10+**
 
 ## Project Structure
 
