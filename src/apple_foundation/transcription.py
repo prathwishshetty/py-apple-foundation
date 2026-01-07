@@ -11,21 +11,31 @@ from pathlib import Path
 from .foundation import _get_binary
 
 
-def transcribe(input_path: str, output_path: str, locale: str = "en-US") -> str:
+import json
+from typing import Iterator, Union, Dict, Any
+
+def transcribe(
+    input_path: str,
+    locale: str = "en-US",
+    stream: bool = False,
+    fast: bool = False,
+    redact: bool = False,
+    full_metadata: bool = False
+) -> Union[str, Dict[str, Any], Iterator[Union[str, Dict[str, Any]]]]:
     """
     Transcribe an audio file using the native transcribe binary.
 
     Args:
         input_path: Path to the audio file (mp3, m4a, wav, etc.)
-        output_path: Path where the transcription will be saved
         locale: Language locale (default: en-US)
+        stream: Whether to stream results (yield iterator) (default: False)
+        fast: Use fast transcription (lower accuracy)
+        redact: Redact sensitive info (politics/swear words based on etiquette)
+        full_metadata: Return proper JSON with confidence/timestamps (default: False)
 
     Returns:
-        The transcribed text
-
-    Raises:
-        FileNotFoundError: If input file or Swift source not found
-        RuntimeError: If compilation or transcription fails
+        String text (if full_metadata=False), or Dict with metadata (if True).
+        If stream=True, returns Iterator of the above.
     """
     input_file = Path(input_path)
     if not input_file.exists():
@@ -34,37 +44,103 @@ def transcribe(input_path: str, output_path: str, locale: str = "en-US") -> str:
     # Get transcribe binary (auto-compiles if needed)
     transcribe_bin = _get_binary("transcribe")
 
-    # Run transcription
-    result = subprocess.run(
-        [str(transcribe_bin), str(input_path), str(output_path), locale],
-        capture_output=True,
-        text=True
-    )
+    cmd = [str(transcribe_bin), str(input_path), "--locale", locale]
+    if stream:
+        cmd.append("--stream")
+    if fast:
+        cmd.append("--fast")
+    if redact:
+        cmd.append("--redact")
+        
+    if full_metadata:
+        cmd.append("--json")
+        cmd.append("--confidence")
+        cmd.append("--alternatives")
 
-    # Print progress output
-    if result.stdout:
-        print(result.stdout)
+    if stream:
+        # Stream output line by line
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,  # Capture stderr to avoid leaking to console
+            text=True,
+            bufsize=1
+        )
+        
+        def result_iterator():
+            if process.stdout:
+                for line in process.stdout:
+                    line = line.strip()
+                    if full_metadata:
+                        try:
+                            yield json.loads(line)
+                        except json.JSONDecodeError:
+                            pass # Skip non-json lines if any
+                    else:
+                        yield line
+                        
+            process.wait()
+            if process.returncode != 0:
+                error_msg = process.stderr.read() if process.stderr else "Unknown error"
+                raise RuntimeError(f"Transcription failed: {error_msg}")
+        
+        return result_iterator()
+    else:
+        # Run normally and capture all output
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True
+        )
 
-    if result.returncode != 0:
-        error_msg = result.stderr or "Unknown error"
-        raise RuntimeError(f"Transcription failed: {error_msg}")
+        if result.returncode != 0:
+            error_msg = result.stderr or "Unknown error"
+            raise RuntimeError(f"Transcription failed: {error_msg}")
 
-    # Read and return the transcription
-    output_file = Path(output_path)
-    if output_file.exists():
-        return output_file.read_text()
-
-    return ""
+        output = result.stdout.strip()
+        
+        if full_metadata:
+            try:
+                return json.loads(output)
+            except json.JSONDecodeError:
+                # Fallback or error?
+                raise RuntimeError(f"Failed to parse JSON output: {output}")
+        
+        return output
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python transcription.py <input_audio> <output_txt> [locale]")
-        sys.exit(1)
+    import argparse
+    parser = argparse.ArgumentParser(description="Transcribe audio file")
+    parser.add_argument("input_path", help="Path to input audio file")
+    parser.add_argument("--locale", default="en-US", help="Locale code (default: en-US)")
+    parser.add_argument("--stream", action="store_true", help="Stream output")
+    parser.add_argument("--fast", action="store_true", help="Use fast transcription")
+    parser.add_argument("--redact", action="store_true", help="Redact sensitive info")
+    parser.add_argument("--json", dest="full_metadata", action="store_true", help="Output full JSON metadata")
+    
+    args = parser.parse_args()
 
     try:
-        text = transcribe(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "en-US")
-        print(f"\nTranscription length: {len(text)} characters")
+        result = transcribe(
+            args.input_path,
+            locale=args.locale,
+            stream=args.stream,
+            fast=args.fast,
+            redact=args.redact,
+            full_metadata=args.full_metadata
+        )
+        if args.stream:
+            for snippet in result:
+                if args.full_metadata:
+                    print(json.dumps(snippet))
+                else:
+                    print(snippet)
+        else:
+            if args.full_metadata:
+                print(json.dumps(result, indent=2))
+            else:
+                print(result)
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

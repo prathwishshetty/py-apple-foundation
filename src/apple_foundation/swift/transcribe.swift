@@ -94,133 +94,99 @@ actor TextAccumulator {
 
 // MARK: - Transcription
 
-func ensureModel(transcriber: SpeechTranscriber, locale: Locale) async throws {
-    let supported = await SpeechTranscriber.supportedLocales
-    let localeID = locale.identifier(.bcp47)
-    let supportedIDs = supported.map { $0.identifier(.bcp47) }
+// MARK: - Models
 
-    guard !supportedIDs.isEmpty else {
-        throw TranscriptionError.noSupportedLocales
-    }
-
-    guard supportedIDs.contains(localeID) else {
-        throw TranscriptionError.localeNotSupported
-    }
-
-    let installed = await Set(SpeechTranscriber.installedLocales)
-    let installedIDs = installed.map { $0.identifier(.bcp47) }
-
-    if installedIDs.contains(localeID) {
-        print("Model for \(localeID) already installed.")
-        return
-    }
-
-    print("Downloading speech model for \(localeID)...")
-    if let downloader = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-        try await downloader.downloadAndInstall()
-        print("Model downloaded successfully.")
-    }
+struct TranscriptionSegment: Codable {
+    let text: String
+    let start: Double?
+    let duration: Double?
+    let confidence: Double?
 }
 
-func streamAudioFile(
-    url: URL,
-    to inputBuilder: AsyncStream<AnalyzerInput>.Continuation,
-    format: AVAudioFormat,
-    progressTracker: ProgressTracker
-) async throws {
-    let file = try AVAudioFile(forReading: url)
-    let totalFrames = file.length
-
-    var framesRead: AVAudioFramePosition = 0
-    let bufferSize: AVAudioFrameCount = 4096
-    let converter = BufferConverter()
-
-    var lastReportedPercent = -1
-
-    while framesRead < totalFrames {
-        try Task.checkCancellation()
-
-        let framesToRead = min(bufferSize, AVAudioFrameCount(totalFrames - framesRead))
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: framesToRead) else {
-            continue
-        }
-
-        try file.read(into: buffer)
-        framesRead += AVAudioFramePosition(buffer.frameLength)
-
-        let converted = try converter.convertBuffer(buffer, to: format)
-        let input = AnalyzerInput(buffer: converted)
-        inputBuilder.yield(input)
-
-        let progress = Double(framesRead) / Double(totalFrames)
-        await progressTracker.setProgress(progress)
-
-        let percent = Int(progress * 100)
-        if percent != lastReportedPercent && percent % 10 == 0 {
-            print("Progress: \(percent)%")
-            lastReportedPercent = percent
-        }
-    }
+struct TranscriptionResult: Codable {
+    let text: String
+    let segments: [TranscriptionSegment]
+    let alternatives: [String]?
 }
 
-func transcribeFile(at url: URL, locale: Locale) async throws -> String {
-    print("Setting up transcriber for: \(locale.identifier(.bcp47))")
+// MARK: - Helper Extensions
 
-    // Create transcriber with audioTimeRange for word-level timestamps
-    let transcriber = SpeechTranscriber(
-        locale: locale,
-        transcriptionOptions: [],
-        reportingOptions: [],  // No volatile results for CLI
-        attributeOptions: [.audioTimeRange]
-    )
-
-    // Ensure model is available
-    try await ensureModel(transcriber: transcriber, locale: locale)
-
-    // Get best audio format
-    guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
-        throw TranscriptionError.noAudioFormat
-    }
-
-    print("Starting transcription...")
-
-    // Create analyzer
-    let analyzer = SpeechAnalyzer(modules: [transcriber])
-
-    // Create input stream
-    let (inputSequence, inputBuilder) = AsyncStream<AnalyzerInput>.makeStream()
-
-    let progressTracker = ProgressTracker()
-    let textAccumulator = TextAccumulator()
-
-    // Start collecting results
-    let resultsTask = Task {
-        for try await result in transcriber.results {
-            if result.isFinal {
-                await textAccumulator.append(result.text)
+extension SpeechTranscriber.Result {
+    func toTranscriptionResult(includeSegments: Bool, includeAlternatives: Bool) -> TranscriptionResult {
+        var segments: [TranscriptionSegment] = []
+        
+        if includeSegments {
+            for run in self.text.runs {
+                let segmentText = String(self.text[run.range].characters)
+                
+                var start: Double?
+                var duration: Double?
+                var confidence: Double?
+                
+                if let timeRange = run.attributes[AttributeScopes.SpeechAttributes.TimeRangeAttribute.self] {
+                    start = timeRange.start.seconds
+                    duration = timeRange.duration.seconds
+                }
+                
+                if let conf = run.attributes[AttributeScopes.SpeechAttributes.ConfidenceAttribute.self] {
+                    confidence = conf
+                }
+                
+                if !segmentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    segments.append(TranscriptionSegment(
+                        text: segmentText,
+                        start: start,
+                        duration: duration,
+                        confidence: confidence
+                    ))
+                }
             }
         }
+        
+        var alts: [String]? = nil
+        if includeAlternatives {
+            alts = self.alternatives.map { String($0.characters) }
+        }
+        
+        return TranscriptionResult(
+            text: String(self.text.characters),
+            segments: segments.isEmpty ? [] : segments,
+            alternatives: alts
+        )
     }
+}
 
-    // Start analyzer
-    try await analyzer.start(inputSequence: inputSequence)
+extension TranscriptionResult {
+    func toJSONString() -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        if let data = try? encoder.encode(self), let jsonIdx = String(data: data, encoding: .utf8) {
+             return jsonIdx
+        }
+        return "{}"
+    }
+}
 
-    // Stream audio file
-    try await streamAudioFile(
-        url: url,
-        to: inputBuilder,
-        format: analyzerFormat,
-        progressTracker: progressTracker
-    )
+actor TranscriptionAccumulator {
+    private var fullText = ""
+    private var allSegments: [TranscriptionSegment] = []
+    private var allAlternatives: [String] = []
 
-    // Finish streaming
-    inputBuilder.finish()
-    try await analyzer.finalizeAndFinishThroughEndOfInput()
-
-    // Wait for results
-    try? await resultsTask.value
-
-    return await textAccumulator.plainText
+    func append(_ result: TranscriptionResult) {
+        fullText += result.text
+        allSegments.append(contentsOf: result.segments)
+        if let alts = result.alternatives {
+            allAlternatives.append(contentsOf: alts)
+        }
+    }
+    
+    var finalResult: TranscriptionResult {
+        TranscriptionResult(
+            text: fullText,
+            segments: allSegments,
+            alternatives: allAlternatives.isEmpty ? nil : allAlternatives
+        )
+    }
 }
 
 // MARK: - Main
@@ -229,21 +195,50 @@ func transcribeFile(at url: URL, locale: Locale) async throws -> String {
 struct TranscribeCLI {
     static func main() async {
         let args = CommandLine.arguments
-
-        guard args.count >= 3 else {
-            print("Usage: transcribe <input_audio_path> <output_text_path> [locale]")
-            print("  locale: Optional, defaults to en-US")
+        
+        guard args.count >= 2 else {
+            printUsage()
             exit(1)
         }
 
         let inputPath = args[1]
-        let outputPath = args[2]
-        let localeIdentifier = args.count >= 4 ? args[3] : "en-US"
+        var localeIdentifier = "en-US"
+        var fast = false
+        var redact = false
+        var stream = false
+        var json = false
+        var confidence = false
+        var alternatives = false
+        
+        var i = 2
+        while i < args.count {
+            let arg = args[i]
+            switch arg {
+            case "--locale":
+                if i + 1 < args.count {
+                    localeIdentifier = args[i+1]
+                    i += 1
+                }
+            case "--fast":
+                fast = true
+            case "--redact":
+                redact = true
+            case "--stream":
+                stream = true
+            case "--json":
+                json = true
+            case "--confidence":
+                confidence = true
+            case "--alternatives":
+                alternatives = true
+            default:
+                break
+            }
+            i += 1
+        }
 
         let audioURL = URL(fileURLWithPath: inputPath)
-        let outputURL = URL(fileURLWithPath: outputPath)
 
-        // Use Locale components like Apple's sample
         let parts = localeIdentifier.split(separator: "-")
         let langCode = String(parts[0])
         let regionCode = parts.count > 1 ? String(parts[1]) : "US"
@@ -260,26 +255,210 @@ struct TranscribeCLI {
         }
 
         do {
-            let startTime = Date()
+            let transcription = try await transcribeFile(
+                at: audioURL,
+                locale: locale,
+                fast: fast,
+                redact: redact,
+                stream: stream,
+                json: json,
+                confidence: confidence,
+                alternatives: alternatives
+            )
 
-            let transcription = try await transcribeFile(at: audioURL, locale: locale)
-
-            let elapsed = Date().timeIntervalSince(startTime)
-            print(String(format: "\nTranscription completed in %.1f seconds", elapsed))
-
-            if transcription.isEmpty {
-                fputs("Warning: No speech detected in audio file\n", stderr)
+            if !stream {
+                 print(transcription)
             }
-
-            try transcription.write(to: outputURL, atomically: true, encoding: String.Encoding.utf8)
-            print("Saved to: \(outputPath)")
-
-            let preview = String(transcription.prefix(300))
-            print("\nPreview:\n\(preview)...")
 
         } catch {
             fputs("Error: \(error.localizedDescription)\n", stderr)
             exit(1)
+        }
+    }
+    
+    static func printUsage() {
+        print("""
+        Usage: transcribe <input_audio_path> [options]
+        
+        Options:
+          --locale <locale>   Locale code (e.g. en-US), default: en-US
+          --fast              Use fast transcription (lower accuracy)
+          --redact            Redact sensitive info (politics/swear words based on etiquette)
+          --stream            Stream partial results to stdout
+          --json              Output structured JSON
+          --confidence        Include confidence scores (JSON only)
+          --alternatives      Include alternative transcriptions (JSON only)
+        """)
+    }
+
+    // MARK: - Transcription Logic
+
+    static func transcribeFile(
+        at url: URL,
+        locale: Locale,
+        fast: Bool,
+        redact: Bool,
+        stream: Bool,
+        json: Bool,
+        confidence: Bool,
+        alternatives: Bool
+    ) async throws -> String {
+        if !json {
+            print("Setting up transcriber for: \(locale.identifier(.bcp47))", terminator: "\n")
+        }
+
+        var reportingOptions: Set<SpeechTranscriber.ReportingOption> = []
+        if fast {
+            reportingOptions.insert(.fastResults)
+        }
+        if stream {
+            reportingOptions.insert(.volatileResults)
+        }
+        if alternatives {
+            reportingOptions.insert(.alternativeTranscriptions)
+        }
+
+        var transcriptionOptions: Set<SpeechTranscriber.TranscriptionOption> = []
+        if redact {
+            transcriptionOptions.insert(.etiquetteReplacements)
+        }
+        
+        var attributeOptions: Set<SpeechTranscriber.ResultAttributeOption> = [.audioTimeRange]
+        if confidence {
+            attributeOptions.insert(.transcriptionConfidence)
+        }
+
+        let transcriber = SpeechTranscriber(
+            locale: locale,
+            transcriptionOptions: transcriptionOptions,
+            reportingOptions: reportingOptions,
+            attributeOptions: attributeOptions
+        )
+
+        try await ensureModel(transcriber: transcriber, locale: locale, quiet: json)
+
+        guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
+            throw TranscriptionError.noAudioFormat
+        }
+
+        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        let (inputSequence, inputBuilder) = AsyncStream<AnalyzerInput>.makeStream()
+
+        let progressTracker = ProgressTracker()
+        let accumulator = TranscriptionAccumulator()
+
+        let resultsTask = Task {
+            for try await result in transcriber.results {
+                if stream {
+                    if json {
+                        let tr = result.toTranscriptionResult(includeSegments: true, includeAlternatives: alternatives)
+                        print(tr.toJSONString()) 
+                        if !stream { fflush(stdout) }
+                    } else {
+                        print(result.text.characters.map { String($0) }.joined(), terminator: "\r")
+                        fflush(stdout)
+                    }
+                }
+                
+                if result.isFinal {
+                    let tr = result.toTranscriptionResult(includeSegments: true, includeAlternatives: alternatives)
+                    await accumulator.append(tr)
+                    
+                    if stream && !json {
+                        print("", terminator: "\n")
+                    }
+                }
+            }
+        }
+
+        try await analyzer.start(inputSequence: inputSequence)
+
+        try await streamAudioFile(
+            url: url,
+            to: inputBuilder,
+            format: analyzerFormat,
+            progressTracker: progressTracker,
+            quiet: json
+        )
+
+        inputBuilder.finish()
+        try await analyzer.finalizeAndFinishThroughEndOfInput()
+
+        _ = try? await resultsTask.value
+        
+        if json {
+            return await accumulator.finalResult.toJSONString()
+        } else {
+            return await accumulator.finalResult.text
+        }
+    }
+
+    static func ensureModel(transcriber: SpeechTranscriber, locale: Locale, quiet: Bool) async throws {
+        let supported = await SpeechTranscriber.supportedLocales
+        let localeID = locale.identifier(.bcp47)
+        let supportedIDs = supported.map { $0.identifier(.bcp47) }
+
+        guard !supportedIDs.isEmpty else {
+            throw TranscriptionError.noSupportedLocales
+        }
+
+        guard supportedIDs.contains(localeID) else {
+            throw TranscriptionError.localeNotSupported
+        }
+
+        let installed = await Set(SpeechTranscriber.installedLocales)
+        let installedIDs = installed.map { $0.identifier(.bcp47) }
+
+        if installedIDs.contains(localeID) {
+            if !quiet { print("Model for \(localeID) already installed.") }
+            return
+        }
+
+        if !quiet { print("Downloading speech model for \(localeID)...") }
+        if let downloader = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+            try await downloader.downloadAndInstall()
+            if !quiet { print("Model downloaded successfully.") }
+        }
+    }
+
+    static func streamAudioFile(
+        url: URL,
+        to inputBuilder: AsyncStream<AnalyzerInput>.Continuation,
+        format: AVAudioFormat,
+        progressTracker: ProgressTracker,
+        quiet: Bool
+    ) async throws {
+        let file = try AVAudioFile(forReading: url)
+        let totalFrames = file.length
+
+        var framesRead: AVAudioFramePosition = 0
+        let bufferSize: AVAudioFrameCount = 4096
+        let converter = BufferConverter()
+
+        var lastReportedPercent = -1
+
+        while framesRead < totalFrames {
+            try Task.checkCancellation()
+
+            let framesToRead = min(bufferSize, AVAudioFrameCount(totalFrames - framesRead))
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: framesToRead) else {
+                continue
+            }
+
+            try file.read(into: buffer)
+            framesRead += AVAudioFramePosition(buffer.frameLength)
+
+            let converted = try converter.convertBuffer(buffer, to: format)
+            let input = AnalyzerInput(buffer: converted)
+            inputBuilder.yield(input)
+
+            let progress = Double(framesRead) / Double(totalFrames)
+            await progressTracker.setProgress(progress)
+
+            let percent = Int(progress * 100)
+            if !quiet && percent != lastReportedPercent && percent % 10 == 0 {
+                lastReportedPercent = percent
+            }
         }
     }
 }

@@ -55,7 +55,19 @@ print(result["title"])
 ```python
 from apple_foundation import transcribe
 
-text = transcribe("audio.mp3", "output.txt", locale="en-US")
+# Basic transcription (text only)
+text = transcribe("audio.mp3", locale="en-US")
+print(text)
+
+# Streaming partial results
+for partial_text in transcribe("audio.mp3", stream=True):
+    print(partial_text, end="\r")
+
+# Advanced: Full metadata (JSON)
+# Returns a dictionary with timestamps, confidence scores, and alternatives
+result = transcribe("audio.mp3", full_metadata=True, fast=False, redact=True)
+for segment in result["segments"]:
+    print(f"[{segment['start']:.2f}s] {segment['text']}")
 ```
 
 ## System Requirements
