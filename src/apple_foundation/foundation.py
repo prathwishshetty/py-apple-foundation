@@ -7,8 +7,70 @@ Provides an OpenAI-like interface to Apple's on-device language model.
 
 import subprocess
 import json
+import sys
 from pathlib import Path
 from typing import Any
+
+
+def _get_cache_dir() -> Path:
+    """Get the cache directory for compiled Swift binaries."""
+    cache_dir = Path.home() / ".cache" / "apple-foundation" / "bin"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _get_swift_source_dir() -> Path:
+    """Get the directory containing Swift source files."""
+    return Path(__file__).parent / "swift"
+
+
+def _compile_binary(name: str) -> Path:
+    """Compile a Swift binary on-demand."""
+    cache_dir = _get_cache_dir()
+    binary_path = cache_dir / name
+    source_path = _get_swift_source_dir() / f"{name}.swift"
+    
+    if not source_path.exists():
+        raise FileNotFoundError(f"Swift source not found: {source_path}")
+    
+    # Check if we need to recompile (source is newer than binary)
+    if binary_path.exists():
+        if binary_path.stat().st_mtime >= source_path.stat().st_mtime:
+            return binary_path
+    
+    print(f"Compiling {name}.swift...", file=sys.stderr)
+    try:
+        subprocess.run(
+            ["swiftc", str(source_path), "-o", str(binary_path)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to compile {name}.swift: {e.stderr}") from e
+    except FileNotFoundError:
+        raise RuntimeError(
+            "Swift compiler not found. Install Xcode command line tools: "
+            "xcode-select --install"
+        ) from None
+    
+    return binary_path
+
+
+def _get_binary(name: str) -> Path:
+    """Get path to a binary, compiling if necessary."""
+    cache_dir = _get_cache_dir()
+    binary_path = cache_dir / name
+    
+    if binary_path.exists():
+        # Check if source is newer (needs recompile)
+        source_path = _get_swift_source_dir() / f"{name}.swift"
+        if source_path.exists() and source_path.stat().st_mtime > binary_path.stat().st_mtime:
+            return _compile_binary(name)
+        return binary_path
+    
+    # Compile on first use
+    return _compile_binary(name)
 
 
 def generate(
@@ -16,16 +78,15 @@ def generate(
     temperature: float | None = None,
     max_tokens: int | None = None,
     schema: dict[str, Any] | None = None,
-    # Phase 1: New parameters
     system_prompt: str | None = None,
-    instructions: str | None = None,  # Alias for system_prompt
-    sampling_mode: str | None = None,  # "greedy", "top_k", "top_p"
+    instructions: str | None = None,
+    sampling_mode: str | None = None,
     top_k: int | None = None,
     top_p: float | None = None,
     seed: int | None = None,
-    model: str | None = None,  # "default", "content_tagging"
-    use_case: str | None = None,  # Alias for model
-    guardrails: str | None = None,  # "default", "permissive"
+    model: str | None = None,
+    use_case: str | None = None,
+    guardrails: str | None = None,
 ) -> str | dict[str, Any]:
     """
     Generate text using Apple's on-device Foundation Model.
@@ -35,60 +96,25 @@ def generate(
         temperature: Controls randomness (0.0 to 2.0). Higher = more creative.
         max_tokens: Maximum number of tokens in the response.
         schema: Optional JSON Schema dict for structured output.
-                Supported types: object, array, string, number, boolean, enum.
-        
-        # Phase 1 parameters
-        system_prompt: System-level instructions for the model (defines role/behavior).
+        system_prompt: System-level instructions for the model.
         instructions: Alias for system_prompt.
-        sampling_mode: Sampling strategy - "greedy" (deterministic), "top_k", or "top_p".
-        top_k: Number of top tokens to sample from (for top_k mode, default: 40).
-        top_p: Cumulative probability threshold (for top_p mode, default: 0.9).
+        sampling_mode: Sampling strategy - "greedy", "top_k", or "top_p".
+        top_k: Number of top tokens to sample from (for top_k mode).
+        top_p: Cumulative probability threshold (for top_p mode).
         seed: Random seed for reproducible outputs.
-        model: Model selection - "default" (general) or "content_tagging".
+        model: Model selection - "default" or "content_tagging".
         use_case: Alias for model.
-        guardrails: Content safety mode - "default" (strict) or "permissive".
+        guardrails: Content safety mode - "default" or "permissive".
 
     Returns:
         str: The generated text if no schema provided.
         dict: The parsed JSON object if schema was provided.
 
     Raises:
-        FileNotFoundError: If the generate binary is not found.
-        RuntimeError: If generation fails.
-
-    Example:
-        >>> from src.foundation_service import generate
-        
-        # Simple text generation
-        >>> result = generate("Write a haiku about coding")
-        >>> print(result)
-        
-        # With system prompt
-        >>> result = generate(
-        ...     "What is 2+2?",
-        ...     system_prompt="You are a calculator. Only respond with numbers."
-        ... )
-        
-        # With sampling control
-        >>> result = generate(
-        ...     "Write a creative story",
-        ...     sampling_mode="top_k",
-        ...     top_k=40,
-        ...     seed=42
-        ... )
-
-        # Structured output
-        >>> schema = {"type": "object", "properties": {"title": {"type": "string"}}}
-        >>> result = generate("Extract the title", schema=schema)
-        >>> print(result["title"])
+        FileNotFoundError: If Swift source is not found.
+        RuntimeError: If compilation or generation fails.
     """
-    # Find binary relative to this script
-    # Script is in src/apple_foundation/, binary is in bin/
-    project_root = Path(__file__).parent.parent.parent
-    generate_bin = project_root / "bin" / "generate"
-
-    if not generate_bin.exists():
-        raise FileNotFoundError(f"Generate binary not found: {generate_bin}")
+    generate_bin = _get_binary("generate")
 
     # Handle parameter aliases
     final_system_prompt = instructions or system_prompt
@@ -107,12 +133,10 @@ def generate(
         schema_json = json.dumps(schema)
         cmd.extend(["--json-schema", schema_json])
 
-    # Phase 1: Add new parameters
     if final_system_prompt:
         cmd.extend(["--system-prompt", final_system_prompt])
 
     if sampling_mode:
-        # Convert Python naming to CLI naming (top_k -> top-k)
         cli_mode = sampling_mode.replace("_", "-")
         cmd.extend(["--sampling", cli_mode])
 
@@ -126,7 +150,6 @@ def generate(
         cmd.extend(["--seed", str(seed)])
 
     if final_model:
-        # Convert Python naming to CLI naming
         cli_model = final_model.replace("_", "-")
         cmd.extend(["--model", cli_model])
 
@@ -147,28 +170,19 @@ def generate(
         try:
             return json.loads(output)
         except json.JSONDecodeError:
-            # Return raw output if parsing fails
             return output
 
     return output
 
 
-def main():
-    """Simple test of the generate function."""
-    import sys
-
+if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python foundation_service.py <prompt>")
+        print("Usage: python foundation.py <prompt>")
         sys.exit(1)
 
-    prompt = sys.argv[1]
     try:
-        result = generate(prompt)
+        result = generate(sys.argv[1])
         print(result)
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

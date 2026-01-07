@@ -7,6 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Import shared binary resolution from foundation module
+from .foundation import _get_binary
+
 
 def transcribe(input_path: str, output_path: str, locale: str = "en-US") -> str:
     """
@@ -21,20 +24,15 @@ def transcribe(input_path: str, output_path: str, locale: str = "en-US") -> str:
         The transcribed text
 
     Raises:
-        FileNotFoundError: If input file or transcribe binary not found
-        RuntimeError: If transcription fails
+        FileNotFoundError: If input file or Swift source not found
+        RuntimeError: If compilation or transcription fails
     """
     input_file = Path(input_path)
     if not input_file.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
-    # Find transcribe binary relative to this script
-    # Script is in src/apple_foundation/, binary is in bin/
-    project_root = Path(__file__).parent.parent.parent
-    transcribe_bin = project_root / "bin" / "transcribe"
-
-    if not transcribe_bin.exists():
-        raise FileNotFoundError(f"Transcribe binary not found: {transcribe_bin}")
+    # Get transcribe binary (auto-compiles if needed)
+    transcribe_bin = _get_binary("transcribe")
 
     # Run transcription
     result = subprocess.run(
@@ -59,23 +57,14 @@ def transcribe(input_path: str, output_path: str, locale: str = "en-US") -> str:
     return ""
 
 
-def main():
+if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python transcribe.py <input_audio> <output_txt> [locale]")
-        print("  locale: Optional, defaults to en-US")
+        print("Usage: python transcription.py <input_audio> <output_txt> [locale]")
         sys.exit(1)
 
-    input_path = sys.argv[1]
-    output_path = sys.argv[2]
-    locale = sys.argv[3] if len(sys.argv) > 3 else "en-US"
-
     try:
-        text = transcribe(input_path, output_path, locale)
+        text = transcribe(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "en-US")
         print(f"\nTranscription length: {len(text)} characters")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

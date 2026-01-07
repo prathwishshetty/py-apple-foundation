@@ -70,7 +70,3 @@ text = transcribe("audio.mp3", "output.txt", locale="en-US")
 │   └── swift/                    # Swift source files
 └── pyproject.toml
 ```
-
-## Legacy Code
-
-Unrelated scripts (RSS downloader, batch processing) have been moved to `legacy_code/`.
