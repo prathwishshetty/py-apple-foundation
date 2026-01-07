@@ -48,6 +48,24 @@ schema = {
 }
 result = generate("Extract title and summary", schema=schema)
 print(result["title"])
+
+# Tool calling
+weather_tool = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Get current weather",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string"}
+            },
+            "required": ["location"]
+        }
+    }
+}
+result = generate("What's the weather in SF?", tools=[weather_tool])
+print(result) # {'function': 'get_weather', 'arguments': {'location': 'SF'}}
 ```
 
 ### Audio Transcription

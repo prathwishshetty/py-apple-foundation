@@ -83,6 +83,7 @@ def _convert_tools_to_schema(tools: List[Dict[str, Any]]) -> Dict[str, Any]:
         one_of_options.append(option)
         
     return {
+        "name": "ToolChoice",
         "anyOf": one_of_options
     }
 

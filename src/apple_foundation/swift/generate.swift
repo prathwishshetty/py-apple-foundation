@@ -24,13 +24,34 @@ enum GenerateError: LocalizedError {
 /// Converts a standard JSON Schema dictionary to DynamicGenerationSchema.
 /// Supports: object, array, string, number, integer, boolean, enum.
 func parseJSONSchema(_ json: [String: Any], name: String = "Root") throws -> DynamicGenerationSchema {
-    // Check for enum first (anyOf style)
+    // Check for anyOf (polymorphism)
+    if let anyOf = json["anyOf"] as? [[String: Any]] {
+        var schemas: [DynamicGenerationSchema] = []
+        for (index, schemaFunc) in anyOf.enumerated() {
+            // Try to derive a meaningful name from the nested schema if possible
+            var subName = "\(name)_Option\(index)"
+            if let properties = schemaFunc["properties"] as? [String: Any],
+               let funcObj = properties["function"] as? [String: Any],
+               let constName = funcObj["const"] as? String {
+                subName = constName
+            }
+            try schemas.append(parseJSONSchema(schemaFunc, name: subName))
+        }
+        return DynamicGenerationSchema(name: name, description: json["description"] as? String, anyOf: schemas)
+    }
+
+    // Check for enum (simple string union)
     if let enumValues = json["enum"] as? [String] {
         return DynamicGenerationSchema(name: name, description: json["description"] as? String, anyOf: enumValues)
     }
+    
+    // Check for const (single value enum)
+    if let constVal = json["const"] as? String {
+        return DynamicGenerationSchema(name: name, description: json["description"] as? String, anyOf: [constVal])
+    }
 
     guard let type = json["type"] as? String else {
-        throw GenerateError.invalidSchema("Missing 'type' field in schema")
+        throw GenerateError.invalidSchema("Missing 'type', 'anyOf', 'enum', or 'const' field in schema")
     }
 
     switch type {
@@ -62,6 +83,10 @@ func parseJSONSchema(_ json: [String: Any], name: String = "Root") throws -> Dyn
         )
 
     case "string":
+        // Handle const as a single-value enum if present (common in tool definitions)
+        if let constVal = json["const"] as? String {
+            return DynamicGenerationSchema(name: name, description: json["description"] as? String, anyOf: [constVal])
+        }
         return DynamicGenerationSchema(type: String.self, guides: [])
 
     case "number":
