@@ -9,7 +9,83 @@ import subprocess
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Dict, Optional
+
+
+def _convert_tools_to_schema(tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Convert OpenAI-style tool definitions to a JSON Schema for the model.
+    
+    Transforms:
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {...}
+                }
+            }
+        ]
+    
+    Into:
+        {
+            "type": "object",
+            "properties": {
+                "function": {
+                     "type": "string",
+                     "enum": ["get_weather", ...]
+                },
+                "arguments": {
+                    "anyOf": [
+                        { ... parameters for get_weather ... }
+                    ]
+                }
+            },
+            "required": ["function", "arguments"]
+        }
+    """
+    if not tools:
+        return {}
+        
+    # We construct a schema that forces the model to pick one function
+    # and provide the matching arguments.
+    # To make this robust for the Apple model, we use an "anyOf" structure
+    # at the top level effectively acting as a tagged union.
+    
+    one_of_options = []
+    
+    for tool in tools:
+        if tool.get("type") != "function":
+            continue
+            
+        fn = tool.get("function", {})
+        name = fn.get("name")
+        if not name:
+            continue
+            
+        description = fn.get("description", "")
+        parameters = fn.get("parameters", {})
+        
+        # Create a schema option for this specific function
+        option = {
+            "type": "object",
+            "properties": {
+                "function": {
+                    "const": name,
+                    "description": description
+                },
+                "arguments": parameters
+            },
+            "required": ["function", "arguments"],
+            "additionalProperties": False
+        }
+        one_of_options.append(option)
+        
+    return {
+        "anyOf": one_of_options
+    }
+
 
 
 def _get_cache_dir() -> Path:
@@ -87,6 +163,7 @@ def generate(
     model: str | None = None,
     use_case: str | None = None,
     guardrails: str | None = None,
+    tools: List[Dict[str, Any]] | None = None,
 ) -> str | dict[str, Any]:
     """
     Generate text using Apple's on-device Foundation Model.
@@ -105,10 +182,11 @@ def generate(
         model: Model selection - "default" or "content_tagging".
         use_case: Alias for model.
         guardrails: Content safety mode - "default" or "permissive".
+        tools: List of OpenAI-style tool definitions.
 
     Returns:
-        str: The generated text if no schema provided.
-        dict: The parsed JSON object if schema was provided.
+        str: The generated text if no schema/tools provided.
+        dict: The parsed JSON object if schema or tools were provided.
 
     Raises:
         FileNotFoundError: If Swift source is not found.
@@ -118,7 +196,12 @@ def generate(
 
     # Handle parameter aliases
     final_system_prompt = instructions or system_prompt
+    final_system_prompt = instructions or system_prompt
     final_model = use_case or model
+    
+    # Handle tools -> schema conversion
+    if tools and schema is None:
+        schema = _convert_tools_to_schema(tools)
 
     # Build command
     cmd = [str(generate_bin), prompt]
