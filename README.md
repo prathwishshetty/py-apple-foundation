@@ -11,10 +11,14 @@ Python wrapper for Apple's on-device Foundation Models (macOS 26+). Provides tex
 ## Installation
 
 ```bash
-uv pip install -e .
+# Install directly from GitHub
+uv pip install "git+https://github.com/prathwish/py-apple-foundation.git"
+
+# Or with pip
+pip install "git+https://github.com/prathwish/py-apple-foundation.git"
 ```
 
-Swift binaries are automatically compiled during installation.
+Swift binaries are compiled automatically on first use.
 
 ## Usage
 
