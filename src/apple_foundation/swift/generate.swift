@@ -61,12 +61,17 @@ func parseJSONSchema(_ json: [String: Any], name: String = "Root") throws -> Dyn
             maximumElements: json["maxItems"] as? Int
         )
 
-    case "string", "number", "integer", "boolean":
-        // For primitive types, we create a simple schema with guides if present
-        // Note: DynamicGenerationSchema doesn't directly support primitives as roots,
-        // so we wrap them in a minimal object or return as-is for property use.
-        // For now, return a named schema (used within object properties).
-        return DynamicGenerationSchema(name: name, description: json["description"] as? String, properties: [])
+    case "string":
+        return DynamicGenerationSchema(type: String.self, guides: [])
+
+    case "number":
+        return DynamicGenerationSchema(type: Double.self, guides: [])
+
+    case "integer":
+        return DynamicGenerationSchema(type: Int.self, guides: [])
+
+    case "boolean":
+        return DynamicGenerationSchema(type: Bool.self, guides: [])
 
     default:
         throw GenerateError.invalidSchema("Unsupported type: \(type)")

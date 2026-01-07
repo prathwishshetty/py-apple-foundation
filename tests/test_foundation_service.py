@@ -5,12 +5,8 @@ Tests system prompts, sampling modes, model selection, and guardrails.
 """
 
 import sys
-from pathlib import Path
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from src.foundation_service import generate
+from apple_foundation import generate
 
 
 def test_basic_generation():
