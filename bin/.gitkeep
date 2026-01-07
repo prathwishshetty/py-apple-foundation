@@ -1,0 +1,2 @@
+# This directory holds compiled Swift binaries (gitignored)
+# Run ./scripts/build_swift.sh to build them
