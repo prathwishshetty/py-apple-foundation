@@ -303,9 +303,6 @@ struct TranscribeCLI {
         confidence: Bool,
         alternatives: Bool
     ) async throws -> String {
-        if !json {
-            print("Setting up transcriber for: \(locale.identifier(.bcp47))", terminator: "\n")
-        }
 
         var reportingOptions: Set<SpeechTranscriber.ReportingOption> = []
         if fast {
@@ -410,7 +407,6 @@ struct TranscribeCLI {
         let installedIDs = installed.map { $0.identifier(.bcp47) }
 
         if installedIDs.contains(localeID) {
-            if !quiet { print("Model for \(localeID) already installed.") }
             return
         }
 
