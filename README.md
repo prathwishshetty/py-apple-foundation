@@ -13,10 +13,10 @@ Python wrapper for Apple's on-device Foundation Models (macOS 26+). Provides tex
 
 ```bash
 # Install directly from GitHub using uv (recommended)
-uv pip install "git+https://github.com/prathwish/py-apple-foundation.git"
+uv pip install "git+https://github.com/prathwishshetty/py-apple-foundation.git"
 
 # Or with pip
-pip install "git+https://github.com/prathwish/py-apple-foundation.git"
+pip install "git+https://github.com/prathwishshetty/py-apple-foundation.git"
 ```
 
 ## Usage
